@@ -1,0 +1,17 @@
+# CMake build tree
+build/
+.git-real/
+
+# Generated kernel-module artifacts; keep the source and Kbuild Makefile.
+driver/*.o
+driver/*.ko
+driver/*.mod
+driver/*.mod.c
+driver/Module.symvers
+driver/modules.order
+driver/.*.cmd
+
+# Editor and OS files
+.directory
+.DS_Store
+*.swp
