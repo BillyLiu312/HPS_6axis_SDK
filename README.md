@@ -52,8 +52,21 @@ nc 127.0.0.1 9000
 Example message:
 
 ```json
-{"timestamp_ms":1726300000000,"device_id":18174,"status":0,"fx":0.160000,"fy":-0.190000,"fz":-0.890000,"mx":0.005000,"my":0.000000,"mz":0.004000}
+{"schema":"hps6axis.wrench.v1","monotonic_ns":123456789,"sequence":42,"device_id":18174,"status":0,"fx":0.160000,"fy":-0.190000,"fz":-0.890000,"mx":0.005000,"my":0.000000,"mz":0.004000}
 ```
+
+`monotonic_ns` is sampled with `CLOCK_MONOTONIC` immediately after a complete frame
+passes CRC validation and its six values are decoded. `sequence` starts at zero for
+each server process and increments only for successfully decoded frames. CRC failures,
+incomplete frames, and timeouts produce no JSON record. The hardware status byte is
+published unchanged (`0` means normal and any nonzero value indicates a sensor error).
+Forces are native sensor coordinates in N and moments are native sensor coordinates in
+Nm; this process performs no bias, transform, filtering, contact estimation, or tokenization.
+
+Serial acquisition and TCP delivery run independently. Each client has a bounded path
+through a 512-frame queue; a slow client skips stale records rather than blocking serial
+reads. If USB is unplugged, the TCP listener and connected clients remain alive while the
+server retries the serial port once per second and resumes without a deploy-side restart.
 
 By default the server binds only to loopback. To allow a second machine on the LAN to
 connect, bind to the robot's LAN address (preferred) or `0.0.0.0`:
@@ -109,6 +122,41 @@ Link the application with the built `hps6axis` library and `pthread`:
 ```bash
 c++ -std=c++17 app.cpp -Iinclude -Lbuild -lhps6axis -lpthread -o app
 ```
+
+## Two sensors on `/dev/ttyUSB0` and `/dev/ttyUSB1`
+
+Use `DualSensor` when each sensor has its own USB-RS485 adapter. Reads and lifecycle
+commands are dispatched concurrently on separate worker threads:
+
+```bash
+./build/hps6axis_dual_read /dev/ttyUSB0 /dev/ttyUSB1
+```
+
+The example prints each sensor's device ID and paired measurements. `DualSensor::readMeasurement`
+returns only after both ports have produced a frame (or the timeout expires). The two sensors
+may both use address `0x00` because they are connected to independent serial ports.
+
+For deployment, run one independent server process per side:
+
+```bash
+./build/hps6axis_server /dev/ttyUSB1 9000 0.0.0.0  # left
+./build/hps6axis_server /dev/ttyUSB0 9001 0.0.0.0  # right
+```
+
+Or launch both and stop both together with:
+
+```bash
+./scripts/start_dual_servers.sh <left-ttyUSB-number> <right-ttyUSB-number> [bind-address]
+
+# Current wiring: left=/dev/ttyUSB1, right=/dev/ttyUSB0
+./scripts/start_dual_servers.sh 1 0 0.0.0.0
+```
+
+The publisher intentionally does not use `DualSensor::readMeasurement`; a failure or
+reconnect on one side cannot delay acquisition or publication on the other side.
+
+The script deliberately requires the left and right ttyUSB numbers on every start. It
+checks that both device nodes exist and rejects using the same number for both hands.
 
 The process needs read/write permission for the serial device. On Ubuntu, add the user to `dialout` and log in again:
 

@@ -24,6 +24,9 @@ target_link_libraries(hps6axis_stop PRIVATE hps6axis)
 add_executable(hps6axis_server examples/hps6axis_server.cpp)
 target_link_libraries(hps6axis_server PRIVATE hps6axis)
 
+add_executable(hps6axis_dual_read examples/dual_read_sensor.cpp)
+target_link_libraries(hps6axis_dual_read PRIVATE hps6axis)
+
 include(CTest)
 if(BUILD_TESTING)
   add_executable(hps6axis_protocol_test tests/test_protocol.cpp)

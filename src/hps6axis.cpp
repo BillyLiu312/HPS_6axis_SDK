@@ -10,8 +10,10 @@
 #include <cstdio>
 #include <termios.h>
 #include <thread>
+#include <time.h>
 #include <unistd.h>
 #include <utility>
+#include <exception>
 
 namespace hps6axis {
 namespace {
@@ -72,6 +74,22 @@ int remainingMs(int64_t deadline) {
 uint32_t readU32(const std::vector<uint8_t>& p, size_t i) {
   return static_cast<uint32_t>(p[i]) | (static_cast<uint32_t>(p[i + 1]) << 8) |
          (static_cast<uint32_t>(p[i + 2]) << 16) | (static_cast<uint32_t>(p[i + 3]) << 24);
+}
+
+template <typename First, typename Second>
+void runParallel(First first, Second second) {
+  std::exception_ptr first_error;
+  std::exception_ptr second_error;
+  std::thread first_thread([&] {
+    try { first(); } catch (...) { first_error = std::current_exception(); }
+  });
+  std::thread second_thread([&] {
+    try { second(); } catch (...) { second_error = std::current_exception(); }
+  });
+  first_thread.join();
+  second_thread.join();
+  if (first_error) std::rethrow_exception(first_error);
+  if (second_error) std::rethrow_exception(second_error);
 }
 
 }  // namespace
@@ -249,6 +267,11 @@ Wrench Sensor::parseWrench(const Frame& frame) {
       (static_cast<uint32_t>(frame.payload[i + 3]) << 24)); };
   w.fx = value(0) / 1000.0; w.fy = value(4) / 1000.0; w.fz = value(8) / 1000.0;
   w.mx = value(12) / 1000.0; w.my = value(16) / 1000.0; w.mz = value(20) / 1000.0;
+  timespec timestamp{};
+  if (clock_gettime(CLOCK_MONOTONIC, &timestamp) != 0)
+    throw Error("clock_gettime failed: " + std::string(std::strerror(errno)));
+  w.monotonic_ns = static_cast<uint64_t>(timestamp.tv_sec) * 1000000000ULL +
+                   static_cast<uint64_t>(timestamp.tv_nsec);
   return w;
 }
 
@@ -371,6 +394,59 @@ std::array<uint32_t, 6> Sensor::getOverloadCounts() {
 std::array<int32_t, 6> Sensor::getOverloadPeaks() {
   const Frame f = transact(0xD8); if (f.payload.size() < 25) throw Error("invalid overload peak response");
   std::array<int32_t, 6> result{}; for (size_t i = 0; i < 6; ++i) result[i] = static_cast<int32_t>(readU32(f.payload, 1 + i * 4)); return result;
+}
+
+DualSensor::DualSensor(SerialConfig first, SerialConfig second)
+    : first_(std::move(first)), second_(std::move(second)) {}
+
+void DualSensor::open() {
+  try {
+    runParallel([&] { first_.open(); }, [&] { second_.open(); });
+  } catch (...) {
+    first_.close();
+    second_.close();
+    throw;
+  }
+}
+
+void DualSensor::close() noexcept {
+  first_.close();
+  second_.close();
+}
+
+bool DualSensor::isOpen() const noexcept {
+  return first_.isOpen() && second_.isOpen();
+}
+
+std::array<uint16_t, 2> DualSensor::getDeviceIds() {
+  std::array<uint16_t, 2> ids{};
+  runParallel([&] { ids[0] = first_.getDeviceId(); },
+              [&] { ids[1] = second_.getDeviceId(); });
+  return ids;
+}
+
+std::array<Wrench, 2> DualSensor::measureOnce() {
+  std::array<Wrench, 2> values{};
+  runParallel([&] { values[0] = first_.measureOnce(); },
+              [&] { values[1] = second_.measureOnce(); });
+  return values;
+}
+
+void DualSensor::startContinuous() {
+  runParallel([&] { first_.startContinuous(); },
+              [&] { second_.startContinuous(); });
+}
+
+void DualSensor::stopContinuous() {
+  runParallel([&] { first_.stopContinuous(); },
+              [&] { second_.stopContinuous(); });
+}
+
+bool DualSensor::readMeasurement(DualMeasurement& out, int timeout_ms) {
+  std::array<bool, 2> received{};
+  runParallel([&] { received[0] = first_.readMeasurement(out.first, timeout_ms); },
+              [&] { received[1] = second_.readMeasurement(out.second, timeout_ms); });
+  return received[0] && received[1];
 }
 
 }  // namespace hps6axis

@@ -26,11 +26,18 @@ struct Wrench {
   double fx = 0.0, fy = 0.0, fz = 0.0;
   double mx = 0.0, my = 0.0, mz = 0.0;
   uint8_t status = 0;  // 0: valid, 0xFF: sensor reports an exception
+  // CLOCK_MONOTONIC sampled immediately after CRC validation and decoding.
+  uint64_t monotonic_ns = 0;
 };
 
 struct VersionInfo {
   uint8_t year = 0, month = 0, day = 0;
   uint8_t major = 0, minor = 0, revision = 0;
+};
+
+struct DualMeasurement {
+  Wrench first;
+  Wrench second;
 };
 
 class Sensor {
@@ -92,6 +99,36 @@ class Sensor {
                                            const std::vector<uint8_t>& payload);
   static uint16_t crc16Ccitt(const uint8_t* data, size_t size);
   static Wrench parseWrench(const Frame& frame);
+};
+
+// Two sensors connected to independent serial ports. Reads and lifecycle
+// commands are dispatched concurrently because each port has its own bus.
+class DualSensor {
+ public:
+  explicit DualSensor(
+      SerialConfig first = {},
+      SerialConfig second = SerialConfig{"/dev/ttyUSB1", 115200, 500, 0});
+  ~DualSensor() = default;
+  DualSensor(const DualSensor&) = delete;
+  DualSensor& operator=(const DualSensor&) = delete;
+
+  void open();
+  void close() noexcept;
+  bool isOpen() const noexcept;
+  std::array<uint16_t, 2> getDeviceIds();
+  std::array<Wrench, 2> measureOnce();
+  void startContinuous();
+  void stopContinuous();
+  bool readMeasurement(DualMeasurement& out, int timeout_ms = -1);
+
+  Sensor& first() noexcept { return first_; }
+  Sensor& second() noexcept { return second_; }
+  const Sensor& first() const noexcept { return first_; }
+  const Sensor& second() const noexcept { return second_; }
+
+ private:
+  Sensor first_;
+  Sensor second_;
 };
 
 }  // namespace hps6axis
